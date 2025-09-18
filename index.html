@@ -1,0 +1,418 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <title>智能 AI 贪吃蛇</title>
+  <style>
+    html, body {
+      margin: 0; padding: 0;
+      width: 100%; height: 100%;
+      overflow: hidden;
+      display: flex; justify-content: center; align-items: center;
+      background: #f0f0f0;
+      font-family: sans-serif;
+    }
+    #container {
+      position: relative;
+      border: 4px solid #000;
+      background: #fff;
+    }
+    canvas { display: block; }
+    #overlay {
+      position: absolute; top: 0; left: 0;
+      width: 100%; height: 100%;
+      background: rgba(0,0,0,0.6);
+      display: none;
+      flex-direction: column;
+      align-items: center; justify-content: center;
+      color: #fff; text-align: center;
+    }
+    #overlay .msg { font-size: 1.5em; margin: 8px 0; }
+    #overlay button {
+      padding: 6px 12px; font-size: 1em; cursor: pointer;
+      margin-top: 12px;
+    }
+    #scores {
+      position: absolute; top: 10px; left: 50%;
+      transform: translateX(-50%);
+      display: flex; gap: 24px;
+      font-size: 1.1em; color: #333;
+    }
+    #timer { font-weight: bold; }
+  </style>
+</head>
+<body>
+  <div id="container">
+    <canvas id="game"></canvas>
+    <div id="overlay">
+      <div class="msg" id="overlayMsg">游戏结束！</div>
+      <div>蓝蛇分数：<span id="final1">0</span></div>
+      <div>红蛇分数：<span id="final2">0</span></div>
+      <button id="restart">重新开始</button>
+    </div>
+    <div id="scores">
+      <span id="score1">蓝蛇：0</span>
+      <span id="score2">红蛇：0</span>
+      <span id="timer">03:00</span>
+    </div>
+  </div>
+
+  <script>
+    const gridSize = 20;
+    let tileX, tileY, isFullScreen, fixedSize;
+    let spectatorMode, singleMode, aiPro;
+    let gameMinutes;
+    let snake1, dir1, snake2, dir2, scoreBlue, scoreRed;
+    let apples = [], pathQueue1 = [], pathQueue2 = [];
+    let aiToggle1 = false, aiToggle2 = false;
+    let gameInterval, spawnInterval, timerInterval, timeLeft;
+
+    const container  = document.getElementById('container');
+    const canvas     = document.getElementById('game');
+    const ctx        = canvas.getContext('2d');
+    const overlay    = document.getElementById('overlay');
+    const overlayMsg = document.getElementById('overlayMsg');
+    const f1         = document.getElementById('final1');
+    const f2         = document.getElementById('final2');
+    const s1         = document.getElementById('score1');
+    const s2         = document.getElementById('score2');
+    const timerEl    = document.getElementById('timer');
+    const btn        = document.getElementById('restart');
+
+    function askMode() {
+      const m = parseInt(prompt(
+        '请选择模式：\n0-观战（双 AI）\n1-单人（蓝蛇 AI，红蛇玩家）\n2-双人',
+        '1'
+      ), 10);
+      spectatorMode = (m === 0);
+      singleMode    = (m === 1);
+      aiPro = false;
+      if (spectatorMode || singleMode) {
+        const p = parseInt(prompt('是否启用 AI Pro？\n1=是 0=否','0'), 10);
+        aiPro = (p === 1);
+      }
+    }
+
+    function askDuration() {
+      gameMinutes = parseInt(prompt('请输入游戏时长（分钟）','3'), 10);
+      if (isNaN(gameMinutes) || gameMinutes <= 0) gameMinutes = 3;
+    }
+
+    function askSize() {
+      let a = parseInt(prompt(
+        '请输入地图大小 a：\n0=全屏，其他正整数=a×a','30'
+      ), 10);
+      if (isNaN(a) || a < 0) a = 30;
+      isFullScreen = (a === 0);
+      fixedSize    = a;
+    }
+
+    function resize() {
+      if (isFullScreen) {
+        canvas.width  = window.innerWidth;
+        canvas.height = window.innerHeight;
+        tileX = Math.floor(canvas.width  / gridSize);
+        tileY = Math.floor(canvas.height / gridSize);
+      } else {
+        tileX = tileY = fixedSize;
+        canvas.width  = tileX * gridSize;
+        canvas.height = tileY * gridSize;
+      }
+      container.style.width  = canvas.width + 'px';
+      container.style.height = canvas.height + 'px';
+    }
+
+    // 修改：初始生成 4 个果子
+    function startSpawning() {
+      apples = [];
+      clearInterval(spawnInterval);
+      spawnInterval = setInterval(spawnApple, 10000);
+      for (let i = 0; i < 4; i++) {
+        spawnApple();
+      }
+    }
+
+    function spawnApple() {
+      let x, y;
+      do {
+        x = Math.floor(Math.random() * tileX);
+        y = Math.floor(Math.random() * tileY);
+      } while (
+        snake1.concat(snake2).some(s => s.x === x && s.y === y) ||
+        apples.some(a => a.x === x && a.y === y)
+      );
+      apples.push({ x, y });
+      pathQueue1 = [];
+      pathQueue2 = [];
+    }
+
+    function draw() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.fillStyle = 'green';
+      apples.forEach(a =>
+        ctx.fillRect(a.x*gridSize, a.y*gridSize, gridSize, gridSize)
+      );
+      snake1.forEach((s,i) => {
+        ctx.fillStyle = i===0? '#00bfff':'#add8e6';
+        ctx.fillRect(s.x*gridSize, s.y*gridSize, gridSize, gridSize);
+      });
+      snake2.forEach((s,i) => {
+        ctx.fillStyle = i===0? '#ff0000':'#ff7f7f';
+        ctx.fillRect(s.x*gridSize, s.y*gridSize, gridSize, gridSize);
+      });
+    }
+
+    function isFree(x, y) {
+      if (x<0||x>=tileX||y<0||y>=tileY) return false;
+      if (snake1.some(s=>s.x===x&&s.y===y)) return false;
+      if (snake2.some(s=>s.x===x&&s.y===y)) return false;
+      return true;
+    }
+
+    function getDiagonalDir(head,target) {
+      const dx = target.x-head.x, dy = target.y-head.y;
+      if (Math.abs(dx)!==Math.abs(dy)) return null;
+      const step = { x:Math.sign(dx), y:Math.sign(dy) };
+      if (
+        isFree(head.x+step.x,head.y+step.y) &&
+        isFree(head.x+step.x,head.y) &&
+        isFree(head.x,head.y+step.y)
+      ) return step;
+      return null;
+    }
+
+    function getSlantedDir(head,target,toggle){
+      const dx = target.x-head.x, dy = target.y-head.y;
+      if(dx===0||dy===0) return null;
+      let d1,d2;
+      if(toggle){
+        d1={x:Math.sign(dx),y:0}; d2={x:0,y:Math.sign(dy)};
+      } else {
+        d1={x:0,y:Math.sign(dy)}; d2={x:Math.sign(dx),y:0};
+      }
+      if(isFree(head.x+d1.x,head.y+d1.y)) return {dir:d1,next:!toggle};
+      if(isFree(head.x+d2.x,head.y+d2.y)) return {dir:d2,next:toggle};
+      return null;
+    }
+
+    function findPath(start,target){
+      const dirs4 = [{x:1,y:0},{x:-1,y:0},{x:0,y:1},{x:0,y:-1}];
+      const dirs8 = dirs4.concat(
+        [{x:1,y:1},{x:1,y:-1},{x:-1,y:1},{x:-1,y:-1}]
+      );
+      const dirs = aiPro ? dirs8 : dirs4;
+      const obs = new Set([
+        ...snake1.slice(0,-1).map(s=>`${s.x},${s.y}`),
+        ...snake2.map(s=>`${s.x},${s.y}`)
+      ]);
+      const q = [{x:start.x,y:start.y,path:[]}];
+      const vis = new Set([`${start.x},${start.y}`]);
+      while(q.length){
+        const cur = q.shift();
+        if(cur.x===target.x&&cur.y===target.y) return cur.path;
+        for(const d of dirs){
+          const nx=cur.x+d.x, ny=cur.y+d.y, key=`${nx},${ny}`;
+          if(nx<0||nx>=tileX||ny<0||ny>=tileY) continue;
+          if(obs.has(key)||vis.has(key)) continue;
+          vis.add(key);
+          q.push({x:nx,y:ny,path:cur.path.concat([d])});
+        }
+      }
+      return null;
+    }
+
+    function pickTargetFor(head){
+      if(!apples.length) return null;
+      let best=apples[0], bd=Infinity;
+      apples.forEach(a=>{
+        const d=Math.abs(a.x-head.x)+Math.abs(a.y-head.y);
+        if(d<bd){bd=d;best=a;}
+      });
+      return best;
+    }
+
+    function updateTimer(){
+      const m=Math.floor(timeLeft/60), s=timeLeft%60;
+      timerEl.textContent=(m<10?'0'+m:m)+':'+(s<10?'0'+s:s);
+    }
+
+    function startTimer(){
+      clearInterval(timerInterval);
+      timeLeft = gameMinutes*60;
+      updateTimer();
+      timerInterval = setInterval(()=>{
+        timeLeft--;
+        if(timeLeft<=0){clearInterval(timerInterval);timeUp();}
+        else updateTimer();
+      },1000);
+    }
+
+    function timeUp(){
+      clearInterval(gameInterval); clearInterval(spawnInterval);
+      const msg = scoreBlue>scoreRed
+        ? '时间到，蓝蛇获胜'
+        : scoreRed>scoreBlue
+          ? '时间到，红蛇获胜'
+          : '时间到，平局';
+      overlayMsg.textContent=msg;
+      f1.textContent=scoreBlue;
+      f2.textContent=scoreRed;
+      overlay.style.display='flex';
+    }
+
+    function gameLoop(){
+      if(spectatorMode||singleMode){
+        const t1=pickTargetFor(snake1[0]);
+        if(t1){
+          if(aiPro){
+            const d=getDiagonalDir(snake1[0],t1);
+            if(d) dir1=d;
+            else {
+              if(!pathQueue1.length){
+                const p1=findPath(snake1[0],t1);
+                if(p1) pathQueue1=p1;
+              }
+              if(pathQueue1.length) dir1=pathQueue1.shift();
+            }
+          } else {
+            const r1=getSlantedDir(snake1[0],t1,aiToggle1);
+            if(r1){dir1=r1.dir;aiToggle1=r1.next;}
+            else {
+              if(!pathQueue1.length){
+                const p1=findPath(snake1[0],t1);
+                if(p1) pathQueue1=p1;
+              }
+              if(pathQueue1.length) dir1=pathQueue1.shift();
+            }
+          }
+        }
+        if(spectatorMode){
+          const t2=pickTargetFor(snake2[0]);
+          if(t2){
+            if(aiPro){
+              const d2=getDiagonalDir(snake2[0],t2);
+              if(d2) dir2=d2;
+              else {
+                if(!pathQueue2.length){
+                  const p2=findPath(snake2[0],t2);
+                  if(p2) pathQueue2=p2;
+                }
+                if(pathQueue2.length) dir2=pathQueue2.shift();
+              }
+            } else {
+              const r2=getSlantedDir(snake2[0],t2,aiToggle2);
+              if(r2){dir2=r2.dir;aiToggle2=r2.next;}
+              else {
+                if(!pathQueue2.length){
+                  const p2=findPath(snake2[0],t2);
+                  if(p2) pathQueue2=p2;
+                }
+                if(pathQueue2.length) dir2=pathQueue2.shift();
+              }
+            }
+          }
+        }
+      }
+
+      const h1={x:snake1[0].x+dir1.x,y:snake1[0].y+dir1.y};
+      const h2={x:snake2[0].x+dir2.x,y:snake2[0].y+dir2.y};
+
+      if(h1.x<0||h1.x>=tileX||h1.y<0||h1.y>=tileY)
+        return endGame('蓝蛇碰墙，蓝蛇输了');
+      if(h2.x<0||h2.x>=tileX||h2.y<0||h2.y>=tileY)
+        return endGame('红蛇碰墙，红蛇输了');
+      if(snake2.some(s=>s.x===h1.x&&s.y===h1.y))
+        return endGame('蓝蛇撞红蛇，蓝蛇输了');
+      if(snake1.some(s=>s.x===h2.x&&s.y===h2.y))
+        return endGame('红蛇撞蓝蛇，红蛇输了');
+      if(snake1.some(s=>s.x===h1.x&&s.y===h1.y))
+        return endGame('蓝蛇撞自己，蓝蛇输了');
+      if(snake2.some(s=>s.x===h2.x&&s.y===h2.y))
+        return endGame('红蛇撞自己，红蛇输了');
+
+      snake1.unshift(h1);
+      snake2.unshift(h2);
+
+      let ate1=false, ate2=false;
+      apples=apples.filter(a=>{
+        if(h1.x===a.x&&h1.y===a.y){
+          scoreBlue++; s1.textContent='蓝蛇：'+scoreBlue;
+          ate1=true; return false;
+        }
+        if(h2.x===a.x&&h2.y===a.y){
+          scoreRed++;  s2.textContent='红蛇：'+scoreRed;
+          ate2=true; return false;
+        }
+        return true;
+      });
+      if(ate1) spawnApple();
+      if(ate2) spawnApple();
+
+      if(!ate1) snake1.pop();
+      if(!ate2) snake2.pop();
+
+      draw();
+    }
+
+    function endGame(msg){
+      clearInterval(gameInterval); clearInterval(spawnInterval);
+      clearInterval(timerInterval);
+      overlayMsg.textContent=msg;
+      f1.textContent=scoreBlue;
+      f2.textContent=scoreRed;
+      overlay.style.display='flex';
+    }
+
+    function init(){
+      askMode();
+      askDuration();
+      askSize();
+      resize();
+      snake1=[{x:0,y:0}]; dir1={x:1,y:0}; scoreBlue=0; s1.textContent='蓝蛇：0';
+      snake2=[{x:tileX-1,y:tileY-1}]; dir2={x:-1,y:0}; scoreRed=0; s2.textContent='红蛇：0';
+      apples=[]; pathQueue1=[]; pathQueue2=[]; aiToggle1=aiToggle2=false;
+      overlay.style.display='none';
+      clearInterval(gameInterval);
+      clearInterval(spawnInterval);
+      startSpawning();
+      startTimer();
+      gameInterval = setInterval(gameLoop,150);
+      draw();
+    }
+
+    window.addEventListener('keydown', e=>{
+      const k=e.key;
+      if(!spectatorMode){
+        if(singleMode){
+          if(k==='ArrowLeft'&&dir2.x===0)dir2={x:-1,y:0};
+          if(k==='ArrowRight'&&dir2.x===0)dir2={x:1,y:0};
+          if(k==='ArrowUp'&&dir2.y===0)dir2={x:0,y:-1};
+          if(k==='ArrowDown'&&dir2.y===0)dir2={x:0,y:1};
+        } else {
+          if(k==='a'&&dir1.x===0)dir1={x:-1,y:0};
+          if(k==='d'&&dir1.x===0)dir1={x:1,y:0};
+          if(k==='w'&&dir1.y===0)dir1={x:0,y:-1};
+          if(k==='s'&&dir1.y===0)dir1={x:0,y:1};
+          if(k==='ArrowLeft'&&dir2.x===0)dir2={x:-1,y:0};
+          if(k==='ArrowRight'&&dir2.x===0)dir2={x:1,y:0};
+          if(k==='ArrowUp'&&dir2.y===0)dir2={x:0,y:-1};
+          if(k==='ArrowDown'&&dir2.y===0)dir2={x:0,y:1};
+        }
+      }
+    });
+
+    btn.addEventListener('click', init);
+    window.addEventListener('resize', ()=>{
+      if(isFullScreen){
+        clearInterval(gameInterval); clearInterval(spawnInterval);
+        clearInterval(timerInterval);
+        resize(); draw();
+        startSpawning(); startTimer();
+        gameInterval=setInterval(gameLoop,150);
+      }
+    });
+
+    init();
+  </script>
+</body>
+</html>
